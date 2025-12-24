@@ -1,0 +1,159 @@
+package com.example.chunkfinder;
+
+import com.example.chunkfinder.input.ToggleKeybind;
+import com.example.chunkfinder.render.ChunkESP;
+import net.fabricmc.api.ClientModInitializer;
+
+public class ChunkFinderMod implements ClientModInitializer {
+
+    public static boolean ENABLED = true;
+
+    @Override
+    public void onInitializeClient() {
+        ToggleKeybind.register();
+        ChunkESP.register();
+        System.out.println("ChunkFinder ESP Loaded");
+    }
+}
+package com.example.chunkfinder.config;
+
+import net.minecraft.block.Block;
+import net.minecraft.block.Blocks;
+
+import java.util.Set;
+
+public class ChunkFinderConfig {
+
+    public static int STORAGE_THRESHOLD = 10;
+    public static int SCAN_RADIUS = 4; // chunks
+
+    public static final Set<Block> STORAGE_BLOCKS = Set.of(
+            Blocks.CHEST,
+            Blocks.TRAPPED_CHEST,
+            Blocks.BARREL,
+            Blocks.SHULKER_BOX,
+            Blocks.WHITE_SHULKER_BOX,
+            Blocks.BLACK_SHULKER_BOX,
+            Blocks.BLUE_SHULKER_BOX,
+            Blocks.RED_SHULKER_BOX
+    );
+}
+package com.example.chunkfinder.scan;
+
+import com.example.chunkfinder.config.ChunkFinderConfig;
+import net.minecraft.util.math.ChunkPos;
+import net.minecraft.world.World;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class ChunkCache {
+
+    private static final Map<ChunkPos, Integer> CACHE = new HashMap<>();
+
+    public static int getStorageCount(World world, ChunkPos pos) {
+        return CACHE.computeIfAbsent(pos, p -> scanChunk(world, p));
+    }
+
+    private static int scanChunk(World world, ChunkPos pos) {
+        int count = 0;
+
+        for (int x = pos.getStartX(); x < pos.getStartX() + 16; x++) {
+            for (int z = pos.getStartZ(); z < pos.getStartZ() + 16; z++) {
+                for (int y = world.getBottomY(); y < world.getTopY(); y++) {
+                    if (ChunkFinderConfig.STORAGE_BLOCKS.contains(
+                            world.getBlockState(new net.minecraft.util.math.BlockPos(x, y, z)).getBlock()
+                    )) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    public static void clear() {
+        CACHE.clear();
+    }
+}
+package com.example.chunkfinder.render;
+
+import com.example.chunkfinder.ChunkFinderMod;
+import com.example.chunkfinder.config.ChunkFinderConfig;
+import com.example.chunkfinder.scan.ChunkCache;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.render.*;
+import net.minecraft.util.math.ChunkPos;
+
+public class ChunkESP {
+
+    public static void register() {
+        WorldRenderEvents.AFTER_ENTITIES.register(context -> {
+            if (!ChunkFinderMod.ENABLED) return;
+
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.player == null || mc.world == null) return;
+
+            ChunkPos center = mc.player.getChunkPos();
+
+            RenderSystem.disableDepthTest();
+            RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+
+            BufferBuilder buffer = Tessellator.getInstance().getBuffer();
+            buffer.begin(VertexFormat.DrawMode.LINES, VertexFormats.POSITION_COLOR);
+
+            for (int dx = -ChunkFinderConfig.SCAN_RADIUS; dx <= ChunkFinderConfig.SCAN_RADIUS; dx++) {
+                for (int dz = -ChunkFinderConfig.SCAN_RADIUS; dz <= ChunkFinderConfig.SCAN_RADIUS; dz++) {
+
+                    ChunkPos pos = new ChunkPos(center.x + dx, center.z + dz);
+                    int count = ChunkCache.getStorageCount(mc.world, pos);
+
+                    if (count >= ChunkFinderConfig.STORAGE_THRESHOLD) {
+                        WorldRenderer.drawBox(
+                                context.matrixStack(),
+                                buffer,
+                                pos.getStartX(), mc.world.getBottomY(), pos.getStartZ(),
+                                pos.getEndX() + 1, mc.world.getTopY(), pos.getEndZ() + 1,
+                                1f, 0f, 0f, 1f
+                        );
+                    }
+                }
+            }
+
+            BufferRenderer.drawWithGlobalProgram(buffer.end());
+            RenderSystem.enableDepthTest();
+        });
+    }
+}
+package com.example.chunkfinder.input;
+
+import com.example.chunkfinder.ChunkFinderMod;
+import com.example.chunkfinder.scan.ChunkCache;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.util.InputUtil;
+import org.lwjgl.glfw.GLFW;
+
+public class ToggleKeybind {
+
+    private static KeyBinding toggle;
+
+    public static void register() {
+        toggle = KeyBindingHelper.registerKeyBinding(
+                new KeyBinding(
+                        "Toggle Chunk ESP",
+                        InputUtil.Type.KEYSYM,
+                        GLFW.GLFW_KEY_O,
+                        "ChunkFinder"
+                )
+        );
+
+        net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            while (toggle.wasPressed()) {
+                ChunkFinderMod.ENABLED = !ChunkFinderMod.ENABLED;
+                ChunkCache.clear();
+            }
+        });
+    }
+}
